@@ -1,6 +1,6 @@
 /**********************************************************************************************************************
  * \file main.c
- * \copyright Copyright (C) Infineon Technologies AG 2019
+ * \copyright Copyright (C) Infineon Technologies AG 2024
  * 
  * Use of this file is subject to the terms of use agreed between (i) you or the company in which ordinary course of 
  * business you are acting and (ii) Infineon Technologies AG or its licensees. If and as long as no such terms of use
@@ -27,9 +27,11 @@
 /*********************************************************************************************************************/
 /*-----------------------------------------------------Includes------------------------------------------------------*/
 /*********************************************************************************************************************/
-#include "cyhal.h"
+
 #include "cybsp.h"
+#include "cy_pdl.h"
 #include "cy_retarget_io.h"
+
 
 /*********************************************************************************************************************/
 /*------------------------------------------------------Macros-------------------------------------------------------*/
@@ -46,8 +48,14 @@ volatile bool g_isInterrupt_SW1 = false;
 /* P-DMA interrupt configuration */
 const cy_stc_sysint_t TX_DMA_2D_INT_CFG =
 {
-    .intrSrc      = ( (NvicMux3_IRQn << 16) | (IRQn_Type)TxDma2D_IRQ ),
+    .intrSrc      = ( (NvicMux4_IRQn << CY_SYSINT_INTRSRC_MUXIRQ_SHIFT) | (IRQn_Type)TxDma2D_IRQ ),
     .intrPriority = 6u,
+};
+
+const cy_stc_sysint_t BTN_IRQ_CFG =
+{
+    .intrSrc = ((NvicMux3_IRQn << CY_SYSINT_INTRSRC_MUXIRQ_SHIFT) | CYBSP_USER_BTN_IRQ),
+    .intrPriority = GPIO_INTERRUPT_PRIORITY
 };
 
 /* Source data to be transferred */
@@ -62,6 +70,8 @@ const uint8_t SOURCE_DATA[] =
 /*********************************************************************************************************************/
 /*---------------------------------------------Function Implementations----------------------------------------------*/
 /*********************************************************************************************************************/
+void handle_GPIO_Interrupt_SW1(void);
+
 /**********************************************************************************************************************
  * Function Name: handle_GPIO_Interrupt_SW1
  * Summary:
@@ -73,8 +83,10 @@ const uint8_t SOURCE_DATA[] =
  *  none
  **********************************************************************************************************************
  */
-static void handle_GPIO_Interrupt_SW1(void *handlerArg, cyhal_gpio_event_t event)
+void handle_GPIO_Interrupt_SW1(void)
 {
+    Cy_GPIO_ClearInterrupt(CYBSP_USER_BTN_PORT, CYBSP_USER_BTN_NUM);
+
     g_isInterrupt_SW1 = true;
 }
 
@@ -98,13 +110,14 @@ static void handle_PDMA_Interrupt(void)
     chStatus = Cy_DMA_Channel_GetStatus(TxDma2D_HW, TxDma2D_CHANNEL);
     if (chStatus == CY_DMA_INTR_CAUSE_COMPLETION)
     {
-        Cy_SCB_UART_PutString(KIT_UART_HW, "\r\nX-loop done!\r\n\n");
+        Cy_SCB_UART_PutString(UART_HW, "\r\nX-loop done!\r\n\n");
     }
     else
     {
         char buf[16];
         sprintf(buf, "\r\nerror:%d\r\n\n", chStatus);
-        Cy_SCB_UART_PutString(KIT_UART_HW, buf);
+        Cy_SCB_UART_PutString(UART_HW, buf);
+
         CY_ASSERT(0);
     }
 }
@@ -121,8 +134,6 @@ static void handle_PDMA_Interrupt(void)
  */
 int main(void)
 {
-    cyhal_gpio_callback_data_t  gpioCallbackData;
-    cy_stc_scb_uart_context_t   kitUartContext;
 
     /* Initialize the device and board peripherals */
     if (cybsp_init() != CY_RSLT_SUCCESS)
@@ -134,31 +145,26 @@ int main(void)
     __enable_irq();
 
     /* Initialize the SW1 */
-    if (cyhal_gpio_init(CYBSP_USER_BTN1, CYHAL_GPIO_DIR_INPUT,CYHAL_GPIO_DRIVE_NONE, CYBSP_BTN_OFF) != CY_RSLT_SUCCESS)
-    {
-        CY_ASSERT(0);
-    }
+    Cy_GPIO_Pin_Init(CYBSP_USER_BTN_PORT, CYBSP_USER_BTN_NUM, &CYBSP_USER_BTN1_config);
 
-    /* Start UART operation */
-    if (Cy_SCB_UART_Init(KIT_UART_HW, &KIT_UART_config, &kitUartContext) != CY_SCB_UART_SUCCESS)
-    {
-        CY_ASSERT(0);
-    }
-    Cy_SCB_UART_Enable(KIT_UART_HW);
+    /* Initialize retarget-io to use the debug UART port */
+    Cy_SCB_UART_Init(UART_HW, &UART_config, NULL);
+    Cy_SCB_UART_Enable(UART_HW);
+    cy_retarget_io_init(UART_HW);
 
     /* Transmit header to the terminal */
     /* \x1b[2J\x1b[;H - ANSI ESC sequence for clear screen */
-    Cy_SCB_UART_PutString(KIT_UART_HW, "\x1b[2J\x1b[;H");
-
-    Cy_SCB_UART_PutString(KIT_UART_HW, "************************************************************\r\n");
-    Cy_SCB_UART_PutString(KIT_UART_HW, "PDMA 2D Transfer code example\r\n");
-    Cy_SCB_UART_PutString(KIT_UART_HW, "************************************************************\r\n\n");
-    Cy_SCB_UART_PutString(KIT_UART_HW, ">> push USER_BTN1 to transfer 4-bytes of X(row) \r\n\n");
+    Cy_SCB_UART_PutString(UART_HW, "\x1b[2J\x1b[;H");
+    
+    Cy_SCB_UART_PutString(UART_HW, "************************************************************\r\n");
+    Cy_SCB_UART_PutString(UART_HW, "PDMA 2D Transfer code example\r\n");
+    Cy_SCB_UART_PutString(UART_HW, "************************************************************\r\n\n");
+    Cy_SCB_UART_PutString(UART_HW, ">> push USER_BTN1 to transfer 4-bytes of X(row) \r\n\n");
 
     /* Configure GPIO interrupt for SW1 */
-    gpioCallbackData.callback = handle_GPIO_Interrupt_SW1;
-    cyhal_gpio_register_callback(CYBSP_USER_BTN1, &gpioCallbackData);
-    cyhal_gpio_enable_event(CYBSP_USER_BTN1, CYHAL_GPIO_IRQ_FALL, GPIO_INTERRUPT_PRIORITY, true);
+    Cy_SysInt_Init(&BTN_IRQ_CFG, &handle_GPIO_Interrupt_SW1);
+    NVIC_ClearPendingIRQ((IRQn_Type)BTN_IRQ_CFG.intrSrc);
+    NVIC_EnableIRQ((IRQn_Type) NvicMux3_IRQn);
 
     /* Initialize PDMA */
     if (Cy_DMA_Descriptor_Init(&TxDma2D_Descriptor_0, &TxDma2D_Descriptor_0_config) != CY_DMA_SUCCESS)
@@ -172,14 +178,14 @@ int main(void)
 
     /* Set source and destination address for PDMA descriptor */
     Cy_DMA_Descriptor_SetSrcAddress(&TxDma2D_Descriptor_0, (uint32_t *) SOURCE_DATA);
-    Cy_DMA_Descriptor_SetDstAddress(&TxDma2D_Descriptor_0, (uint32_t *) &KIT_UART_HW->TX_FIFO_WR);
+    Cy_DMA_Descriptor_SetDstAddress(&TxDma2D_Descriptor_0, (uint32_t *) &UART_HW->TX_FIFO_WR);
 
     /* Set descriptor for PDMA channel */
     Cy_DMA_Channel_SetDescriptor(TxDma2D_HW, TxDma2D_CHANNEL, &TxDma2D_Descriptor_0);
 
     /* Initialize and enable interrupt from PDMA */
     Cy_SysInt_Init(&TX_DMA_2D_INT_CFG, &handle_PDMA_Interrupt);
-    NVIC_EnableIRQ((IRQn_Type) NvicMux3_IRQn);
+    NVIC_EnableIRQ((IRQn_Type) NvicMux4_IRQn);
 
     /* Enable PDMA interrupt source. */
     Cy_DMA_Channel_SetInterruptMask(TxDma2D_HW, TxDma2D_CHANNEL, CY_DMA_INTR_MASK);
